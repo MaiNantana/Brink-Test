@@ -27,7 +27,7 @@ public sealed class OrdersEndpointTests
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var summary = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, summary.GetProperty("customerId").GetInt32());
-        Assert.Equal("Pending", summary.GetProperty("status").GetString());
+        Assert.Equal("PendingPayment", summary.GetProperty("status").GetString());
         Assert.Equal(25.00m, summary.GetProperty("totalAmount").GetDecimal());
         Assert.NotEqual(Guid.Empty, summary.GetProperty("orderId").GetGuid());
         Assert.Equal(2, summary.GetProperty("items")[0].GetProperty("quantity").GetInt32());
@@ -153,6 +153,44 @@ public sealed class OrdersEndpointTests
     }
 
     [Fact]
+    public async Task CreateOrder_RetriedWithSameIdempotencyKey_ReturnsOkWithOriginalOrder()
+    {
+        using var factory = new OrdersApiFactory();
+        await factory.InitializeDatabaseAsync();
+        await SeedCustomerAndProductAsync(factory, stock: 5);
+        using var client = factory.CreateClient();
+        var payload = new { customerId = 1, items = new[] { new { productId = 1, quantity = 2 } } };
+
+        var first = await PostWithIdempotencyKeyAsync(client, payload, "retry-key");
+        var retry = await PostWithIdempotencyKeyAsync(client, payload, "retry-key");
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        var firstOrderId = (await first.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("orderId").GetGuid();
+        var retryOrderId = (await retry.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("orderId").GetGuid();
+        Assert.Equal(firstOrderId, retryOrderId);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+        Assert.Equal(1, await db.Orders.CountAsync());
+        Assert.Equal(3, await db.Products.Where(product => product.Id == 1).Select(product => product.StockQuantity).SingleAsync());
+    }
+
+    [Fact]
+    public async Task CreateOrder_IdempotencyKeyReusedWithDifferentPayload_ReturnsUnprocessableEntity()
+    {
+        using var factory = new OrdersApiFactory();
+        await factory.InitializeDatabaseAsync();
+        await SeedCustomerAndProductAsync(factory, stock: 5);
+        using var client = factory.CreateClient();
+        await PostWithIdempotencyKeyAsync(client, new { customerId = 1, items = new[] { new { productId = 1, quantity = 2 } } }, "reused-key");
+
+        var response = await PostWithIdempotencyKeyAsync(client, new { customerId = 1, items = new[] { new { productId = 1, quantity = 1 } } }, "reused-key");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("Idempotency key reused", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task CreateOrder_OrderInsertFailure_RollsBackStockUpdate()
     {
         using var factory = new OrdersApiFactory();
@@ -177,6 +215,7 @@ public sealed class OrdersEndpointTests
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<OrdersDbContext>();
         Assert.Equal(5, await verifyDb.Products.Where(product => product.Id == 1).Select(product => product.StockQuantity).SingleAsync());
         Assert.Equal(0, await verifyDb.Orders.CountAsync());
+        Assert.Equal(0, await verifyDb.OutboxMessages.CountAsync());
     }
 
     [Fact]
@@ -196,10 +235,25 @@ public sealed class OrdersEndpointTests
         Assert.True(orderPath.TryGetProperty("post", out var operation));
         Assert.Equal("CreateOrder", operation.GetProperty("operationId").GetString());
         Assert.True(operation.GetProperty("responses").TryGetProperty("201", out _));
+        Assert.True(operation.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.Contains(
+            operation.GetProperty("parameters").EnumerateArray(),
+            parameter => parameter.GetProperty("name").GetString() == "Idempotency-Key" &&
+                parameter.GetProperty("in").GetString() == "header");
         Assert.True(operation.GetProperty("responses").TryGetProperty("400", out _));
         Assert.True(operation.GetProperty("responses").TryGetProperty("404", out _));
         Assert.True(operation.GetProperty("responses").TryGetProperty("409", out _));
         Assert.True(operation.GetProperty("responses").TryGetProperty("422", out _));
+    }
+
+    private static Task<HttpResponseMessage> PostWithIdempotencyKeyAsync(HttpClient client, object payload, string idempotencyKey)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/orders")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.Add("Idempotency-Key", idempotencyKey);
+        return client.SendAsync(request);
     }
 
     private static async Task SeedCustomerAndProductAsync(

@@ -4,5 +4,8 @@ namespace BrinkTest.Api.Application.Orders;
 
 public interface IOrderService
 {
-    Task<CreateOrderResult> CreateOrderAsync(CreateOrderRequest request, CancellationToken cancellationToken);
+    Task<CreateOrderResult> CreateOrderAsync(
+        CreateOrderRequest request,
+        string? idempotencyKey,
+        CancellationToken cancellationToken);
 }

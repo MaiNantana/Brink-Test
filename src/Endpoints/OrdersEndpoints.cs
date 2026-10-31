@@ -1,5 +1,6 @@
 using BrinkTest.Api.Application.Orders;
 using BrinkTest.Api.Contracts;
+using Microsoft.AspNetCore.Mvc;
 
 namespace BrinkTest.Api.Endpoints;
 
@@ -9,12 +10,14 @@ public static class OrdersEndpoints
     {
         endpoints.MapPost("/api/orders", CreateOrderAsync)
             .WithName("CreateOrder")
-            .WithSummary("Creates a pending order and reserves its product stock.")
+            .WithSummary("Creates a pending-payment order and reserves its product stock.")
             .WithDescription(
-                "Creates an order using current product prices and atomically reserves stock. " +
-                "Returns validation, missing-resource, and inventory-conflict details as ProblemDetails.")
+                "Creates an order using current product prices, atomically reserves stock and records an " +
+                "OrderCreatedEvent in the outbox. Send an Idempotency-Key header to make retries safe: a repeated " +
+                "request returns 200 with the original order. Errors are returned as ProblemDetails.")
             .Accepts<CreateOrderRequest>("application/json")
             .Produces<OrderSummaryResponse>(StatusCodes.Status201Created)
+            .Produces<OrderSummaryResponse>(StatusCodes.Status200OK)
             .ProducesValidationProblem()
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict)
@@ -25,13 +28,16 @@ public static class OrdersEndpoints
 
     private static async Task<IResult> CreateOrderAsync(
         CreateOrderRequest request,
+        [FromHeader(Name = OrderService.IdempotencyKeyHeader)] string? idempotencyKey,
         IOrderService orderService,
         CancellationToken cancellationToken)
     {
-        var result = await orderService.CreateOrderAsync(request, cancellationToken);
+        var result = await orderService.CreateOrderAsync(request, idempotencyKey, cancellationToken);
 
         return result.Error switch
         {
+            CreateOrderError.None when result.IsReplay =>
+                Results.Ok(result.Order),
             CreateOrderError.None =>
                 Results.Created($"/api/orders/{result.Order!.OrderId}", result.Order),
             CreateOrderError.Validation =>
@@ -48,6 +54,8 @@ public static class OrdersEndpoints
                 Problem(StatusCodes.Status409Conflict, "Inventory changed", result.Detail),
             CreateOrderError.TotalOutOfRange =>
                 Problem(StatusCodes.Status422UnprocessableEntity, "Order total is too large", result.Detail),
+            CreateOrderError.IdempotencyKeyReused =>
+                Problem(StatusCodes.Status422UnprocessableEntity, "Idempotency key reused", result.Detail),
             _ => throw new InvalidOperationException($"Unhandled order error {result.Error}.")
         };
     }

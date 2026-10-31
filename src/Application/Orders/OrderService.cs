@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BrinkTest.Api.Contracts;
 using BrinkTest.Api.Data;
 using BrinkTest.Api.Domain;
@@ -10,13 +11,17 @@ public sealed class OrderService(
     TimeProvider timeProvider,
     ILogger<OrderService> logger) : IOrderService
 {
+    public const string IdempotencyKeyHeader = "Idempotency-Key";
+    public const int IdempotencyKeyMaxLength = 64;
+
     private const decimal MaximumOrderTotal = 9999999999999999.99m;
 
     public async Task<CreateOrderResult> CreateOrderAsync(
         CreateOrderRequest request,
+        string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var validationErrors = Validate(request);
+        var validationErrors = Validate(request, idempotencyKey);
         if (validationErrors.Count > 0)
         {
             logger.LogWarning(
@@ -36,6 +41,15 @@ public sealed class OrderService(
             {
                 [nameof(request.Items)] = ["The combined quantity for a product cannot exceed Int32.MaxValue."]
             });
+        }
+
+        if (idempotencyKey is not null)
+        {
+            var existingOrder = await FindByIdempotencyKeyAsync(idempotencyKey, cancellationToken);
+            if (existingOrder is not null)
+            {
+                return Replay(existingOrder, request.CustomerId, quantities);
+            }
         }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -146,8 +160,9 @@ public sealed class OrderService(
             Id = Guid.NewGuid(),
             CustomerId = request.CustomerId,
             CreatedAtUtc = timeProvider.GetUtcNow().UtcDateTime,
-            Status = OrderStatus.Pending,
+            Status = OrderStatus.PendingPayment,
             TotalAmount = totalAmount,
+            IdempotencyKey = idempotencyKey,
             Items = quantities
                 .Select(entry => new OrderItem
                 {
@@ -159,7 +174,26 @@ public sealed class OrderService(
         };
 
         db.Orders.Add(order);
-        await db.SaveChangesAsync(cancellationToken);
+        db.OutboxMessages.Add(CreateOrderCreatedMessage(order));
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException) when (idempotencyKey is not null)
+        {
+            // A concurrent request with the same key committed first; the unique index rejected this insert.
+            await transaction.RollbackAsync(CancellationToken.None);
+            db.ChangeTracker.Clear();
+            var existingOrder = await FindByIdempotencyKeyAsync(idempotencyKey, cancellationToken);
+            if (existingOrder is null)
+            {
+                throw;
+            }
+
+            return Replay(existingOrder, request.CustomerId, quantities);
+        }
+
         await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation(
@@ -168,12 +202,70 @@ public sealed class OrderService(
             order.CustomerId,
             order.TotalAmount);
 
-        return CreateOrderResult.Success(order.ToSummary());
+        return CreateOrderResult.Created(order.ToSummary());
     }
 
-    private static Dictionary<string, string[]> Validate(CreateOrderRequest request)
+    private Task<Order?> FindByIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken) =>
+        db.Orders
+            .AsNoTracking()
+            .Include(order => order.Items)
+            .SingleOrDefaultAsync(order => order.IdempotencyKey == idempotencyKey, cancellationToken);
+
+    private CreateOrderResult Replay(Order existingOrder, int customerId, Dictionary<int, int> quantities)
+    {
+        var matchesRequest =
+            existingOrder.CustomerId == customerId &&
+            existingOrder.Items.Count == quantities.Count &&
+            existingOrder.Items.All(item =>
+                quantities.TryGetValue(item.ProductId, out var quantity) && quantity == item.Quantity);
+
+        if (!matchesRequest)
+        {
+            logger.LogWarning(
+                "Order creation rejected for customer {CustomerId} because the idempotency key was already used for order {OrderId} with a different request.",
+                customerId,
+                existingOrder.Id);
+            return CreateOrderResult.Failure(
+                CreateOrderError.IdempotencyKeyReused,
+                "The Idempotency-Key was already used with a different request.");
+        }
+
+        logger.LogInformation(
+            "Returned existing order {OrderId} for customer {CustomerId} because the request was a duplicate.",
+            existingOrder.Id,
+            customerId);
+        return CreateOrderResult.Replayed(existingOrder.ToSummary());
+    }
+
+    private OutboxMessage CreateOrderCreatedMessage(Order order)
+    {
+        var orderCreated = new OrderCreatedEvent(
+            order.Id,
+            order.CustomerId,
+            order.TotalAmount,
+            order.CreatedAtUtc,
+            order.Items
+                .Select(item => new OrderCreatedEventItem(item.ProductId, item.Quantity, item.UnitPrice))
+                .ToArray());
+
+        return new OutboxMessage
+        {
+            Id = Guid.NewGuid(),
+            Type = nameof(OrderCreatedEvent),
+            Payload = JsonSerializer.Serialize(orderCreated, JsonSerializerOptions.Web),
+            OccurredAtUtc = order.CreatedAtUtc
+        };
+    }
+
+    private static Dictionary<string, string[]> Validate(CreateOrderRequest request, string? idempotencyKey)
     {
         var errors = new Dictionary<string, string[]>();
+
+        if (idempotencyKey is not null &&
+            (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > IdempotencyKeyMaxLength))
+        {
+            errors[IdempotencyKeyHeader] = [$"{IdempotencyKeyHeader} must be 1-{IdempotencyKeyMaxLength} non-blank characters."];
+        }
 
         if (request.CustomerId <= 0)
         {

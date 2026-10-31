@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BrinkTest.Api.Application.Orders;
 using BrinkTest.Api.Contracts;
 using BrinkTest.Api.Data;
@@ -41,13 +42,13 @@ public sealed class OrderServiceTests : IAsyncLifetime
         var request = CreateRequest(quantity: 3);
 
         // Act
-        var result = await _service.CreateOrderAsync(request, CancellationToken.None);
+        var result = await _service.CreateOrderAsync(request, idempotencyKey: null, CancellationToken.None);
 
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Order);
         Assert.NotEqual(Guid.Empty, result.Order.OrderId);
-        Assert.Equal("Pending", result.Order.Status);
+        Assert.Equal("PendingPayment", result.Order.Status);
         Assert.Equal(45.00m, result.Order.TotalAmount);
         Assert.Equal(Now.UtcDateTime, result.Order.CreatedAtUtc);
 
@@ -58,6 +59,75 @@ public sealed class OrderServiceTests : IAsyncLifetime
         Assert.Equal(7, (await _db.Products.SingleAsync()).StockQuantity);
         Assert.Contains(_logger.Collector.GetSnapshot(), log =>
             log.Level == LogLevel.Information && log.Message.Contains($"Created order {savedOrder.Id}"));
+
+        var outboxMessage = await _db.OutboxMessages.SingleAsync();
+        Assert.Equal(nameof(OrderCreatedEvent), outboxMessage.Type);
+        Assert.Null(outboxMessage.ProcessedAtUtc);
+        var orderCreated = JsonSerializer.Deserialize<OrderCreatedEvent>(outboxMessage.Payload, JsonSerializerOptions.Web);
+        Assert.Equal(savedOrder.Id, orderCreated!.OrderId);
+        Assert.Equal(45.00m, orderCreated.TotalAmount);
+        Assert.Equal(3, Assert.Single(orderCreated.Items).Quantity);
+    }
+
+    [Fact]
+    public async Task CreateOrderAsync_SameIdempotencyKeyTwice_ReturnsOriginalOrderAndReservesStockOnce()
+    {
+        // Arrange
+        await SeedAsync(stock: 10);
+        var request = CreateRequest(quantity: 3);
+        var first = await _service.CreateOrderAsync(request, "order-key-1", CancellationToken.None);
+
+        // Act
+        var second = await _service.CreateOrderAsync(request, "order-key-1", CancellationToken.None);
+
+        // Assert
+        Assert.False(first.IsReplay);
+        Assert.True(second.IsSuccess);
+        Assert.True(second.IsReplay);
+        Assert.Equal(first.Order!.OrderId, second.Order!.OrderId);
+
+        _db.ChangeTracker.Clear();
+        Assert.Equal(1, await _db.Orders.CountAsync());
+        Assert.Equal(1, await _db.OutboxMessages.CountAsync());
+        Assert.Equal(7, (await _db.Products.SingleAsync()).StockQuantity);
+        Assert.Equal(LogLevel.Information, _logger.LatestRecord.Level);
+        Assert.Contains("duplicate", _logger.LatestRecord.Message);
+    }
+
+    [Fact]
+    public async Task CreateOrderAsync_IdempotencyKeyReusedWithDifferentRequest_ReturnsIdempotencyKeyReused()
+    {
+        // Arrange
+        await SeedAsync(stock: 10);
+        await _service.CreateOrderAsync(CreateRequest(quantity: 3), "order-key-1", CancellationToken.None);
+
+        // Act
+        var result = await _service.CreateOrderAsync(CreateRequest(quantity: 5), "order-key-1", CancellationToken.None);
+
+        // Assert
+        Assert.Equal(CreateOrderError.IdempotencyKeyReused, result.Error);
+        _db.ChangeTracker.Clear();
+        Assert.Equal(1, await _db.Orders.CountAsync());
+        Assert.Equal(7, (await _db.Products.SingleAsync()).StockQuantity);
+        Assert.Equal(LogLevel.Warning, _logger.LatestRecord.Level);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("this-idempotency-key-is-longer-than-the-sixty-four-characters-limit")]
+    public async Task CreateOrderAsync_InvalidIdempotencyKey_ReturnsValidationError(string idempotencyKey)
+    {
+        // Arrange
+        await SeedAsync(stock: 10);
+
+        // Act
+        var result = await _service.CreateOrderAsync(CreateRequest(quantity: 1), idempotencyKey, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(CreateOrderError.Validation, result.Error);
+        Assert.True(result.ValidationErrors!.ContainsKey(OrderService.IdempotencyKeyHeader));
+        await AssertNothingChangedAsync(expectedStock: 10);
     }
 
     [Fact]
@@ -68,7 +138,7 @@ public sealed class OrderServiceTests : IAsyncLifetime
         var request = CreateRequest(quantity: 3);
 
         // Act
-        var result = await _service.CreateOrderAsync(request, CancellationToken.None);
+        var result = await _service.CreateOrderAsync(request, idempotencyKey: null, CancellationToken.None);
 
         // Assert
         Assert.False(result.IsSuccess);
@@ -86,7 +156,7 @@ public sealed class OrderServiceTests : IAsyncLifetime
         var request = CreateRequest(quantity: 1);
 
         // Act
-        var result = await _service.CreateOrderAsync(request, CancellationToken.None);
+        var result = await _service.CreateOrderAsync(request, idempotencyKey: null, CancellationToken.None);
 
         // Assert
         Assert.Equal(CreateOrderError.ProductInactive, result.Error);
@@ -103,7 +173,7 @@ public sealed class OrderServiceTests : IAsyncLifetime
         var request = CreateRequest(quantity: 0);
 
         // Act
-        var result = await _service.CreateOrderAsync(request, CancellationToken.None);
+        var result = await _service.CreateOrderAsync(request, idempotencyKey: null, CancellationToken.None);
 
         // Assert
         Assert.Equal(CreateOrderError.Validation, result.Error);
@@ -137,6 +207,7 @@ public sealed class OrderServiceTests : IAsyncLifetime
     {
         _db.ChangeTracker.Clear();
         Assert.Equal(0, await _db.Orders.CountAsync());
+        Assert.Equal(0, await _db.OutboxMessages.CountAsync());
         Assert.Equal(expectedStock, (await _db.Products.SingleAsync()).StockQuantity);
     }
 }

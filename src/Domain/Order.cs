@@ -8,5 +8,6 @@ public sealed class Order
     public DateTime CreatedAtUtc { get; set; }
     public OrderStatus Status { get; set; }
     public decimal TotalAmount { get; set; }
+    public string? IdempotencyKey { get; set; }
     public List<OrderItem> Items { get; set; } = [];
 }
