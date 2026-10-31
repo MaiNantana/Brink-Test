@@ -9,6 +9,7 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -36,6 +37,10 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
             entity.Property(order => order.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(order => order.TotalAmount).HasPrecision(18, 2);
             entity.Property(order => order.CreatedAtUtc).IsRequired();
+            entity.Property(order => order.IdempotencyKey).HasMaxLength(64);
+            entity.HasIndex(order => order.IdempotencyKey)
+                .IsUnique()
+                .HasFilter("[IdempotencyKey] IS NOT NULL");
             entity.HasOne(order => order.Customer)
                 .WithMany()
                 .HasForeignKey(order => order.CustomerId)
@@ -55,6 +60,14 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
                 .WithMany()
                 .HasForeignKey(item => item.ProductId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<OutboxMessage>(entity =>
+        {
+            entity.HasKey(message => message.Id);
+            entity.Property(message => message.Type).HasMaxLength(200).IsRequired();
+            entity.Property(message => message.Payload).IsRequired();
+            entity.HasIndex(message => message.ProcessedAtUtc);
         });
     }
 }

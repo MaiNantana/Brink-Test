@@ -2,5 +2,8 @@ namespace BrinkTest.Api.Domain;
 
 public enum OrderStatus
 {
-    Pending
+    PendingPayment,
+    Paid,
+    Cancelled,
+    ReadyToShip
 }
