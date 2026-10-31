@@ -6,11 +6,11 @@ A .NET 10 Minimal API that creates orders using EF Core and SQL Server.
 
 | Part | Deliverable | Location |
 |---|---|---|
-| 1 – System design | Order processing sequence diagram (API, SQL Server, Redis, RabbitMQ, payment, shipping) | [`docs/Diagram.drawio`](docs/Diagram.drawio) |
-| 2 – SQL Server | Create-order transaction script | [`docs/query.sql`](docs/query.sql) |
+| 1 – System design | Order processing sequence diagram (API, SQL Server, Redis, RabbitMQ, payment, shipping) | [`docs/1-Diagram/Diagram.drawio`](docs/1-Diagram/Diagram.drawio) |
+| 2 – SQL Server | Create-order transaction script | [`docs/2-Query/order.sql`](docs/2-Query/order.sql) |
 | 3.1 – .NET implementation | `POST /api/orders` | [`src/`](src/) |
 | 3.2 – Unit tests | Unit and integration tests | [`test/BrinkTest.Api.Tests/`](test/BrinkTest.Api.Tests/) |
-| 3 – AI-assisted development | AI development rules and chat history | [`.github/copilot-instructions.md`](.github/copilot-instructions.md), [`docs/AI_CHAT_HISTORY.md`](docs/AI_CHAT_HISTORY.md) |
+| 3 – AI-assisted development | AI development rules and prompts | [`.github/copilot-instructions.md`](.github/copilot-instructions.md), [`docs/promt-first.md`](docs/promt-first.md), [`docs/copilot-build-prompts.md`](docs/copilot-build-prompts.md), [`docs/3-Testing/`](docs/3-Testing/) |
 
 ## Project structure
 
@@ -19,9 +19,11 @@ BrinkTest.sln
 ├── .github/
 │   └── copilot-instructions.md   Rules for AI-generated code
 ├── docs/
-│   ├── Diagram.drawio            Part 1: order flow diagram
-│   ├── query.sql                 Part 2: create-order SQL
-│   └── AI_CHAT_HISTORY.md        Part 3: AI chat history
+│   ├── 1-Diagram/                Part 1: order flow diagram (.drawio, .png)
+│   ├── 2-Query/                  Part 2: setup.sql, create-order SQL
+│   ├── 3-Testing/                Part 3: prompts for tests
+│   ├── promt-first.md            Part 3: first prompt
+│   └── copilot-build-prompts.md  Part 3: prompts to build src/ and test/
 ├── src/                          BrinkTest.Api
 │   ├── Program.cs                DI and middleware
 │   ├── appsettings*.json         Connection string, logging
@@ -100,7 +102,7 @@ The request is validated first. Then, in one SQL transaction, the API:
 
 ## Relation to the Part 1 design
 
-`docs/Diagram.drawio` shows the full target flow. Part 3 implements the API and SQL Server part of it:
+`docs/1-Diagram/Diagram.drawio` shows the full target flow. Part 3 implements the API and SQL Server part of it:
 
 | Design step | Part 3 |
 |---|---|
@@ -109,4 +111,4 @@ The request is validated first. Then, in one SQL transaction, the API:
 | Insert order `PendingPayment` + outbox | Implemented |
 | Outbox relay → RabbitMQ, payment and shipping workers | Not implemented (out of scope); `OutboxMessages.Id` is the message id that consumers use for de-duplication |
 
-> Part 2 (`docs/query.sql`) uses the Part 2 schema, where the initial status is `Pending` as that task requires. The Part 3 API follows the Part 1 design, so its initial status is `PendingPayment`.
+> Part 2 (`docs/2-Query/order.sql`) uses the Part 2 schema, where the initial status is `Pending` as that task requires. The Part 3 API follows the Part 1 design, so its initial status is `PendingPayment`.

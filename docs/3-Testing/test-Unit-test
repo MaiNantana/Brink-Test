@@ -1,0 +1,27 @@
+Follow .github/copilot-instructions.md.
+Read #file:src/Application/Orders/OrderService.cs first.
+
+Write unit tests in test/BrinkTest.Api.Tests/OrderServiceTests.cs that call
+OrderService directly (no HTTP):
+- Use SQLite "Data Source=:memory:" with EnsureCreated, NOT the EF InMemory
+  provider (it does not support transactions or ExecuteUpdateAsync).
+- Use FakeTimeProvider with a fixed UTC time and FakeLogger<OrderService>.
+- Implement IAsyncLifetime so every test gets its own database.
+
+Business scenarios (most important first):
+1. Successful order creation: stock 10, price 15, quantity 3 →
+   success, status PendingPayment, total 45, CreatedAtUtc = fake time,
+   stock becomes 7, one OrderCreatedEvent outbox row, Information log.
+2. Product unavailable – insufficient stock: stock 2, quantity 3 →
+   InsufficientStock, no order, no outbox row, stock still 2, Warning log.
+3. Product unavailable – inactive product → ProductInactive, nothing changed.
+4. Invalid quantity 0 → Validation error, nothing changed.
+5. Same Idempotency-Key twice → second result IsReplay, same OrderId,
+   stock reserved only once.
+6. Same key with a different request → IdempotencyKeyReused.
+
+Rules: name tests Method_Scenario_ExpectedResult, use // Arrange // Act // Assert,
+assert side effects in the database (order count, stock, outbox), not only
+the returned result. Add small helpers (CreateRequest, SeedAsync,
+AssertNothingChangedAsync) instead of repeating setup.
+Run dotnet test and fix failures in the TESTS only, not in OrderService.

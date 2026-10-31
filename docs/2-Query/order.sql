@@ -1,6 +1,3 @@
-### T-SQL Script: Transaction การสร้าง Order
-
-```sql
 SET NOCOUNT ON;
 SET XACT_ABORT ON; -- บังคับ Rollback อัตโนมัติทันทีหากเกิด Run-time error ร้ายแรง
 
@@ -109,4 +106,3 @@ BEGIN CATCH
     -- ส่งต่อ Error message เพื่อแจ้งเตือน Application Layer
     THROW;
 END CATCH;
-```
