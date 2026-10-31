@@ -24,7 +24,7 @@ They are written for the AI and for the developer reviewing its output.
 
 - In scope: `POST /api/orders` – validate, check customer/product/stock, reserve stock, create a `PendingPayment` order, write an `OrderCreatedEvent` to the outbox, support `Idempotency-Key`, return the `OrderId`.
 - **Out of scope – MUST NOT implement unless explicitly asked:** real payment integration, real shipping integration, RabbitMQ / messaging infrastructure (including the outbox relay/publisher), Redis / distributed cache, authentication.
-- The target design is `docs/Diagram.drawio` (Part 1). Code and diagram **MUST** stay consistent: when one changes (route, status codes, statuses, events), update the other in the same change.
+- The target design is `docs/1-Diagram/Diagram.drawio` (Part 1). Code and diagram **MUST** stay consistent: when one changes (route, status codes, statuses, events), update the other in the same change.
 - If a feature would need one of the above, add a short `// TODO:` only when asked, never a stub implementation.
 
 ---

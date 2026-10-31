@@ -1,0 +1,16 @@
+Follow .github/copilot-instructions.md.
+Create OrdersApiFactory : WebApplicationFactory<Program> that replaces the SQL
+Server DbContext with SQLite in-memory (remove DbContextOptions<OrdersDbContext>
+and IDbContextOptionsConfiguration<OrdersDbContext> first).
+
+Write OrdersEndpointTests that test POST /api/orders over HTTP:
+- 201 + Location header + body on success
+- 400 ValidationProblem (Theory: customerId 0, empty items, quantity 0, productId 0)
+- 404 unknown customer / unknown product (check ProblemDetails title)
+- 409 inactive product and insufficient stock (Theory), nothing saved
+- duplicate product lines are merged into one item
+- retry with the same Idempotency-Key → 200 with the same orderId
+- rollback: add a SQLite trigger that aborts INSERT into Orders → 500,
+  stock unchanged, no order, no outbox row
+- Swagger document contains the operation, all status codes and the
+  Idempotency-Key header

@@ -1,0 +1,6 @@
+Follow .github/copilot-instructions.md.
+Create test/BrinkTest.Api.Tests (xUnit, net10.0) referencing src/BrinkTest.Api.csproj
+and add it to BrinkTest.sln. Add packages: Microsoft.EntityFrameworkCore.Sqlite,
+Microsoft.AspNetCore.Mvc.Testing, Microsoft.Extensions.Diagnostics.Testing (FakeLogger),
+Microsoft.Extensions.TimeProvider.Testing (FakeTimeProvider), all 10.0.0.
+Do not write tests yet. Run dotnet build.

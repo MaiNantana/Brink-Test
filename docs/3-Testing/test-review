@@ -1,0 +1,4 @@
+Prove the tests are meaningful: for each business rule in OrderService,
+tell me which test fails if I remove that rule (e.g. the "StockQuantity >= quantity"
+condition, the IsActive check, the transaction rollback). List rules that no
+test would catch. Do not change code.
